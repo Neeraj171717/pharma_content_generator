@@ -1,0 +1,161 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  engineType = "binary"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      Role     @default(user)
+  organization String?
+  emailVerified DateTime?
+  verificationToken String? @unique
+  verificationExpires DateTime?
+  isActive Boolean @default(false)
+  avatar    String?
+  bio       String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  lastLoginAt DateTime?
+  
+  // Relations
+  contents  Content[]
+  sessions  Session[]
+  activities Activity[]
+  media     Media[]
+  tags      Tag[]
+  
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+model Content {
+  id        String   @id @default(cuid())
+  authorId  String
+  title     String
+  content   String   @db.Text
+  type      ContentType @default(article)
+  status    ContentStatus @default(draft)
+  trustScore Int @default(0)
+  metadata  Json? @db.Json
+  validationResults Json? @db.Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  publishedAt DateTime?
+  
+  // Relations
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  media     Media[]
+  tags      Tag[]
+  
+  @@index([authorId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([type])
+  @@map("contents")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  
+  // Relations
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  description String
+  metadata  Json?    @db.Json
+  ipAddress String?
+  createdAt DateTime @default(now())
+  
+  // Relations
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([createdAt])
+  @@index([type])
+  @@map("activities")
+}
+
+model Media {
+  id        String   @id @default(cuid())
+  userId    String
+  contentId String?
+  filename  String
+  url       String
+  type      String
+  size      Int
+  uploadedAt DateTime @default(now())
+  
+  // Relations
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content   Content? @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  
+  @@index([userId])
+  @@index([contentId])
+  @@index([type])
+  @@map("media")
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  slug      String   @unique
+  userId    String?
+  createdAt DateTime @default(now())
+  
+  // Relations
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  contents  Content[]
+  
+  @@index([name])
+  @@index([userId])
+  @@map("tags")
+}
+
+// Enums
+enum Role {
+  guest
+  user
+  manager
+  admin
+}
+
+enum ContentType {
+  article
+  post
+  page
+}
+
+enum ContentStatus {
+  draft
+  published
+  archived
+}
