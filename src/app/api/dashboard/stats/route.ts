@@ -64,7 +64,7 @@ export async function GET(request: NextRequest) {
       .limit(10);
     if (recentErr) return NextResponse.json({ message: recentErr.message }, { status: 500 });
 
-    const recentRowsArr = (Array.isArray(recentRows) ? recentRows : []) as any[];
+    const recentRowsArr = Array.isArray(recentRows) ? (recentRows as unknown[]).filter(isRecord) : [];
     const recentContent = recentRowsArr.map((row) => {
       const status = normalizeStatusFromRow({ output_json: row.output_json, requires_review: Boolean(row.requires_review) });
       return {
@@ -91,7 +91,7 @@ export async function GET(request: NextRequest) {
       .limit(20);
     if (activityErr) return NextResponse.json({ message: activityErr.message }, { status: 500 });
 
-    const activityRowsArr = (Array.isArray(activityRows) ? activityRows : []) as any[];
+    const activityRowsArr = Array.isArray(activityRows) ? (activityRows as unknown[]).filter(isRecord) : [];
     const recentActivities = activityRowsArr.map((row) => {
       const title = String(row.topic || '').trim() || 'Untitled';
       const requiresReview = Boolean(row.requires_review);

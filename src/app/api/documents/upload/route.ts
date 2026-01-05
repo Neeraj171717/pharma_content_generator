@@ -10,7 +10,7 @@ if (typeof globalWithDomMatrix.DOMMatrix === 'undefined') {
 }
 
 const parsePdf = async (buffer: Buffer): Promise<{ text: string }> => {
-  const mod = await import('pdf-parse-new')
+  const mod = await import('pdf-parse')
   const maybeDefault = (mod as { default?: unknown }).default
   const fn = (maybeDefault ?? mod) as unknown
   if (typeof fn !== 'function') throw new Error('pdf parser import is not a function')
