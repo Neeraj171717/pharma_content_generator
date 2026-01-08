@@ -15,6 +15,15 @@ type ValidationSwarmResults = {
   tone: ValidationAgentResult
 }
 
+type OpenRouterUsageEvent = {
+  purpose: string
+  model: string
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cost_usd: number | null
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -39,6 +48,11 @@ function timeoutSignal(ms: number): AbortSignal {
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n))
+}
+
+function numberOrNull(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(n) ? n : null
 }
 
 function safeJsonParse(text: string): unknown | null {
@@ -75,7 +89,9 @@ async function callOpenRouterJson(opts: {
   system: string
   user: string
   timeoutMs: number
-}): Promise<{ ok: true; parsed: unknown; rawText: string } | { ok: false; reason: string }> {
+  purpose?: string
+  onUsage?: (event: OpenRouterUsageEvent) => void
+}): Promise<{ ok: true; parsed: unknown; rawText: string; usage: OpenRouterUsageEvent | null } | { ok: false; reason: string }> {
   const controller = new AbortController()
   const id = setTimeout(() => controller.abort(), opts.timeoutMs)
   try {
@@ -96,9 +112,88 @@ async function callOpenRouterJson(opts: {
     if (!res.ok) return { ok: false, reason: `openrouter_http_${res.status}` }
     const json = await res.json().catch(() => null)
     const rawText = String(json?.choices?.[0]?.message?.content || '').trim()
+    const usageRaw = isRecord(json) ? (json.usage as unknown) : null
+    const usageRec = isRecord(usageRaw) ? usageRaw : null
+    const promptTokens = numberOrNull(usageRec?.prompt_tokens) ?? 0
+    const completionTokens = numberOrNull(usageRec?.completion_tokens) ?? 0
+    const totalTokens = numberOrNull(usageRec?.total_tokens) ?? promptTokens + completionTokens
+    const costUsd =
+      numberOrNull((usageRec as Record<string, unknown> | null)?.total_cost) ??
+      numberOrNull((usageRec as Record<string, unknown> | null)?.cost) ??
+      numberOrNull((usageRec as Record<string, unknown> | null)?.total_cost_usd) ??
+      null
+    const usageEvent: OpenRouterUsageEvent = {
+      purpose: String(opts.purpose || 'json'),
+      model: String(opts.model || ''),
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: totalTokens,
+      cost_usd: costUsd,
+    }
+    opts.onUsage?.(usageEvent)
     const parsed = safeJsonParse(rawText)
     if (!parsed) return { ok: false, reason: 'invalid_json' }
-    return { ok: true, parsed, rawText }
+    return { ok: true, parsed, rawText, usage: usageEvent }
+  } catch (e: unknown) {
+    clearTimeout(id)
+    const reason =
+      typeof e === 'object' && e !== null && 'name' in e && (e as { name?: unknown }).name === 'AbortError'
+        ? 'timeout'
+        : errorMessage(e)
+    return { ok: false, reason }
+  }
+}
+
+async function callOpenRouterText(opts: {
+  model: string
+  system: string
+  user: string
+  timeoutMs: number
+  purpose: string
+  onUsage?: (event: OpenRouterUsageEvent) => void
+}): Promise<{ ok: true; text: string; usage: OpenRouterUsageEvent | null } | { ok: false; reason: string }> {
+  const controller = new AbortController()
+  const id = setTimeout(() => controller.abort(), opts.timeoutMs)
+  try {
+    const res = await fetch(`${env.openRouterBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.openRouterApiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: opts.model,
+        messages: [
+          { role: 'system', content: opts.system },
+          { role: 'user', content: opts.user },
+        ],
+      }),
+      signal: controller.signal,
+    })
+    clearTimeout(id)
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '')
+      return { ok: false, reason: errText || `openrouter_http_${res.status}` }
+    }
+    const json = await res.json().catch(() => null)
+    const text = String(json?.choices?.[0]?.message?.content || '').trim()
+    const usageRaw = isRecord(json) ? (json.usage as unknown) : null
+    const usageRec = isRecord(usageRaw) ? usageRaw : null
+    const promptTokens = numberOrNull(usageRec?.prompt_tokens) ?? 0
+    const completionTokens = numberOrNull(usageRec?.completion_tokens) ?? 0
+    const totalTokens = numberOrNull(usageRec?.total_tokens) ?? promptTokens + completionTokens
+    const costUsd =
+      numberOrNull((usageRec as Record<string, unknown> | null)?.total_cost) ??
+      numberOrNull((usageRec as Record<string, unknown> | null)?.cost) ??
+      numberOrNull((usageRec as Record<string, unknown> | null)?.total_cost_usd) ??
+      null
+    const usageEvent: OpenRouterUsageEvent = {
+      purpose: String(opts.purpose || 'text'),
+      model: String(opts.model || ''),
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: totalTokens,
+      cost_usd: costUsd,
+    }
+    opts.onUsage?.(usageEvent)
+    return { ok: true, text, usage: usageEvent }
   } catch (e: unknown) {
     clearTimeout(id)
     const reason =
@@ -438,6 +533,7 @@ async function validation_swarm(args: {
   todayISO: string
   recencyDays: number
   internetFallbackUsed: boolean
+  onUsage?: (event: OpenRouterUsageEvent) => void
 }): Promise<{
   results: ValidationSwarmResults
   trustScore: number
@@ -475,6 +571,8 @@ async function validation_swarm(args: {
     timeoutMs: 7000,
     system: `${baseSystem}\n\nResponsibility: Citation Agent.\nFail if the draft uses citations that do not match the provided citations list, or makes significant claims without citations.\n${domainPolicy}\nFor private mode, sources may be internal SOP references without URLs; do not fail due to missing URLs.\nOnly evaluate citation correctness and coverage.`,
     user: JSON.stringify(basePayload),
+    purpose: 'validation_citation',
+    onUsage: args.onUsage,
   })
 
   const factCall = callOpenRouterJson({
@@ -482,6 +580,8 @@ async function validation_swarm(args: {
     timeoutMs: 9000,
     system: `${baseSystem}\n\nResponsibility: Fact-Check Agent.\nFail if the draft contains medical or factual claims not supported by the provided rag_chunks. Only use rag_chunks as evidence. List up to 10 unsupported claims in issues.`,
     user: JSON.stringify(basePayload),
+    purpose: 'validation_fact_check',
+    onUsage: args.onUsage,
   })
 
   const toneCall = callOpenRouterJson({
@@ -489,6 +589,8 @@ async function validation_swarm(args: {
     timeoutMs: 7000,
     system: `${baseSystem}\n\nResponsibility: Tone Agent.\nFail if the draft contains prohibited pharma marketing language (guarantees, cure claims, exaggerated efficacy/safety, off-label promotion, or overly salesy tone). List specific phrases or sentences in issues.`,
     user: JSON.stringify(basePayload),
+    purpose: 'validation_tone',
+    onUsage: args.onUsage,
   })
 
   const recencyCall =
@@ -498,12 +600,14 @@ async function validation_swarm(args: {
           timeoutMs: 7000,
           system: `${baseSystem}\n\nResponsibility: Recency Agent.\nFail if more than 20% of citations appear older than ${args.recencyDays} days based on the rag_chunks/citations content. If recency cannot be determined from provided evidence, return fail.`,
           user: JSON.stringify(basePayload),
+          purpose: 'validation_recency',
+          onUsage: args.onUsage,
         })
       : null
 
   const [citationRes, recencyRes, factRes, toneRes] = await Promise.all([
     citationCall,
-    recencyCall ?? Promise.resolve({ ok: true as const, parsed: { status: 'pass', issues: ['skipped_non_news_mode'], confidence: 1 }, rawText: '' }),
+    recencyCall ?? Promise.resolve({ ok: true as const, parsed: { status: 'pass', issues: ['skipped_non_news_mode'], confidence: 1 }, rawText: '', usage: null }),
     factCall,
     toneCall,
   ])
@@ -572,7 +676,7 @@ async function validation_swarm(args: {
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { topic, keyword: keywordRaw, primaryKeyword, secondaryKeyword, mode, userId, targetWordCount, contentType, inputBody } =
+    const { topic, keyword: keywordRaw, primaryKeyword, secondaryKeyword, mode, userId, targetWordCount, contentType, inputBody, humanizeLevel } =
       body as Record<string, unknown>
     const topicText = typeof topic === 'string' ? topic.trim() : String(topic || '').trim()
     const userIdText = typeof userId === 'string' ? userId.trim() : String(userId || '').trim()
@@ -584,6 +688,15 @@ export async function POST(req: Request) {
       Number.isFinite(targetWordsParsed) && targetWordsParsed > 0 ? Math.floor(targetWordsParsed) : undefined
     const targetWordsCapped = typeof targetWords === 'number' ? clamp(targetWords, 50, 2000) : undefined
     const inputBodyText = typeof inputBody === 'string' ? inputBody.trim() : ''
+    const validHumanizeLevels = ['off', 'standard', 'strong'] as const
+    type HumanizeLevel = (typeof validHumanizeLevels)[number]
+    const isHumanizeLevel = (v: string): v is HumanizeLevel => (validHumanizeLevels as readonly string[]).includes(v)
+    const humanizeLevelText: HumanizeLevel =
+      typeof humanizeLevel === 'string' && isHumanizeLevel(humanizeLevel) ? humanizeLevel : 'standard'
+    const openRouterUsage: OpenRouterUsageEvent[] = []
+    const onUsage = (event: OpenRouterUsageEvent) => {
+      openRouterUsage.push(event)
+    }
 
     const validContentTypes = [
       'long_article',
@@ -1007,27 +1120,23 @@ export async function POST(req: Request) {
     let finalBody = ''
     let lastError = ''
     for (const model of candidates.slice(0, maxAttempts)) {
-      const controller = new AbortController()
-      const id = setTimeout(() => controller.abort(), perAttemptMs)
       try {
-        const gr = await fetch(`${env.openRouterBaseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${env.openRouterApiKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, messages: [{ role: 'system', content: systemPromptFinal }, { role: 'user', content: userPrompt }] }),
-          signal: controller.signal,
+        const gen = await callOpenRouterText({
+          model,
+          system: systemPromptFinal,
+          user: userPrompt,
+          timeoutMs: perAttemptMs,
+          purpose: 'generate',
+          onUsage,
         })
-        clearTimeout(id)
-        if (!gr.ok) {
-          const errText = await gr.text()
-          console.error('[RAG] OpenRouter API Error:', gr.status, errText)
-          lastError = errText
+        if (!gen.ok) {
+          console.error('[RAG] OpenRouter API Error:', gen.reason)
+          lastError = gen.reason
           continue
         }
-        const gd = await gr.json()
-        finalBody = gd.choices?.[0]?.message?.content || ''
+        finalBody = gen.text
         if (finalBody) break
       } catch (e: unknown) {
-        clearTimeout(id)
         console.error('[RAG] Generation Exception:', e)
         lastError = errorMessage(e)
         continue
@@ -1042,44 +1151,51 @@ export async function POST(req: Request) {
     }
 
     let humanized = false
-    if (env.humanizeContentModel && contentTypeText !== 'meta_tags' && remainingMs() > 30000) {
-      const controller = new AbortController()
-      const id = setTimeout(() => controller.abort(), 20000)
+    const shouldRewrite =
+      Boolean(env.humanizeContentModel) &&
+      humanizeLevelText !== 'off' &&
+      contentTypeText !== 'meta_tags' &&
+      remainingMs() > 20000
+    if (shouldRewrite) {
       try {
         const hasSourcesForHumanize = citations.length > 0
-        const humanizeSystem = `You are an expert editor.\n\nRewrite the given Markdown to sound more human and natural while preserving:\n- The exact Markdown heading structure and section order\n- All factual meaning\n- Any inline citations like [1]\n- The entire "## Sources / References" list (same entries, same numbering)\n- The "## Content Source Notice" section if present\n\nHard rules:\n- Do not add new facts.\n- Do not add new sources or URLs.\n- Do not remove or renumber citations.\n- If the input contains no citations, do not add any citations.\n\nReturn ONLY the rewritten Markdown (no preamble).`
-        const humanizeUser = `Topic: ${topicText}\nMode: ${String(mode || '')}\nHas sources: ${hasSourcesForHumanize ? 'yes' : 'no'}\n\nMarkdown to rewrite:\n${finalBody}`
-        const hr = await fetch(`${env.openRouterBaseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${env.openRouterApiKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: env.humanizeContentModel,
-            messages: [
-              { role: 'system', content: humanizeSystem },
-              { role: 'user', content: humanizeUser },
-            ],
-          }),
-          signal: controller.signal,
+        const rewriteSystemStandard = `You are an expert editor.\n\nRewrite the given Markdown to be clearer, more natural, and less repetitive while preserving:\n- The exact Markdown heading structure and section order\n- All factual meaning\n- Any inline citations like [1]\n- The entire "## Sources / References" list (same entries, same numbering)\n- The "## Content Source Notice" section if present\n\nHard rules:\n- Do not add new facts.\n- Do not add new sources or URLs.\n- Do not remove or renumber citations.\n- If the input contains no citations, do not add any citations.\n\nReturn ONLY the rewritten Markdown (no preamble).`
+        const rewriteUser = `Topic: ${topicText}\nMode: ${String(mode || '')}\nHas sources: ${hasSourcesForHumanize ? 'yes' : 'no'}\n\nMarkdown to rewrite:\n${finalBody}`
+        const rewrite1 = await callOpenRouterText({
+          model: env.humanizeContentModel,
+          system: rewriteSystemStandard,
+          user: rewriteUser,
+          timeoutMs: 20000,
+          purpose: 'rewrite_standard',
+          onUsage,
         })
-        clearTimeout(id)
-        if (hr.ok) {
-          const hd = await hr.json()
-          const humanizedText = String(hd?.choices?.[0]?.message?.content || '').trim()
-          if (humanizedText) {
-            const rebuilt = stripTrailingSourcesSection(humanizedText) + formatSourcesSection(citations)
-            finalBody = rebuilt
+        if (rewrite1.ok && rewrite1.text) {
+          finalBody = stripTrailingSourcesSection(rewrite1.text) + formatSourcesSection(citations)
+          if (internetFallbackUsed && !/##\s*Content Source Notice\b/i.test(finalBody)) {
+            finalBody += `\n\n## Content Source Notice\n${contentSourceNotice}\n`
+          }
+          humanized = true
+        }
+
+        if (humanizeLevelText === 'strong' && remainingMs() > 20000) {
+          const rewriteSystemStrong = `You are a senior editor.\n\nRewrite the given Markdown so it reads like careful, original writing: vary sentence structure, reduce template phrasing, and improve flow, while preserving:\n- The exact Markdown heading structure and section order\n- All factual meaning\n- Any inline citations like [1]\n- The entire "## Sources / References" list (same entries, same numbering)\n- The "## Content Source Notice" section if present\n\nHard rules:\n- Do not add new facts.\n- Do not add new sources or URLs.\n- Do not remove or renumber citations.\n- If the input contains no citations, do not add any citations.\n\nReturn ONLY the rewritten Markdown (no preamble).`
+          const rewrite2 = await callOpenRouterText({
+            model: env.humanizeContentModel,
+            system: rewriteSystemStrong,
+            user: `Markdown to rewrite:\n${finalBody}`,
+            timeoutMs: 20000,
+            purpose: 'rewrite_strong',
+            onUsage,
+          })
+          if (rewrite2.ok && rewrite2.text) {
+            finalBody = stripTrailingSourcesSection(rewrite2.text) + formatSourcesSection(citations)
             if (internetFallbackUsed && !/##\s*Content Source Notice\b/i.test(finalBody)) {
               finalBody += `\n\n## Content Source Notice\n${contentSourceNotice}\n`
-            }
-            if (!/##\s*Humanization Notice\b/i.test(finalBody)) {
-              finalBody += `\n\n## Humanization Notice\nThis is humanized content.\n`
             }
             humanized = true
           }
         }
-      } catch {
-        clearTimeout(id)
-      }
+      } catch {}
     }
 
     // Validation Swarm (mandatory guardrails before user sees the draft)
@@ -1096,6 +1212,7 @@ export async function POST(req: Request) {
             todayISO,
             recencyDays: env.recencyDays || 30,
             internetFallbackUsed,
+            onUsage,
           })
         : {
             results: {
@@ -1142,7 +1259,28 @@ export async function POST(req: Request) {
       status: workflowStatus,
     }
 
-    const outputForDb = { ...baseOutput, body: finalBody, blocked }
+    const openRouterTotals = openRouterUsage.reduce(
+      (acc, e) => ({
+        prompt_tokens: acc.prompt_tokens + (Number(e.prompt_tokens) || 0),
+        completion_tokens: acc.completion_tokens + (Number(e.completion_tokens) || 0),
+        total_tokens: acc.total_tokens + (Number(e.total_tokens) || 0),
+        known_cost_usd: acc.known_cost_usd + (typeof e.cost_usd === 'number' ? e.cost_usd : 0),
+        has_any_cost: acc.has_any_cost || typeof e.cost_usd === 'number',
+      }),
+      { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, known_cost_usd: 0, has_any_cost: false }
+    )
+    const run_metrics = {
+      rewrite_level: humanizeLevelText,
+      openrouter: {
+        prompt_tokens: openRouterTotals.prompt_tokens,
+        completion_tokens: openRouterTotals.completion_tokens,
+        total_tokens: openRouterTotals.total_tokens,
+        total_cost_usd: openRouterTotals.has_any_cost ? openRouterTotals.known_cost_usd : null,
+        calls: openRouterUsage,
+      },
+    }
+
+    const outputForDb = { ...baseOutput, body: finalBody, blocked, run_metrics }
     const outputForClient = { ...baseOutput, body: blocked ? '' : finalBody, review_body: blocked ? finalBody : '', blocked }
 
     const insertDraftAttempt = supabaseAdmin

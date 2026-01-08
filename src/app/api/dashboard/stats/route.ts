@@ -8,6 +8,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function numberOrNull(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
 async function getUserFromRequest(request: NextRequest) {
   const authHeader = request.headers.get('authorization') || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -67,12 +72,18 @@ export async function GET(request: NextRequest) {
     const recentRowsArr = Array.isArray(recentRows) ? (recentRows as unknown[]).filter(isRecord) : [];
     const recentContent = recentRowsArr.map((row) => {
       const status = normalizeStatusFromRow({ output_json: row.output_json, requires_review: Boolean(row.requires_review) });
+      const out = row.output_json as unknown;
+      const runMetrics = isRecord(out) ? (out.run_metrics as unknown) : null;
+      const openrouter = isRecord(runMetrics) ? (runMetrics.openrouter as unknown) : null;
+      const runCostUsd = isRecord(openrouter) ? numberOrNull((openrouter as Record<string, unknown>).total_cost_usd) : null;
+      const runTokens = isRecord(openrouter) ? numberOrNull((openrouter as Record<string, unknown>).total_tokens) : null;
       return {
         id: String(row.id),
         title: String(row.topic || ''),
         status,
         trustScore: Number(row.trust_score || 0),
         createdAt: String(row.created_at),
+        ...(isAdmin ? { runCostUsd, runTokens } : {}),
       };
     });
 
@@ -80,6 +91,14 @@ export async function GET(request: NextRequest) {
       recentContent.length > 0
         ? Math.round(recentContent.reduce((sum, c) => sum + (Number(c.trustScore) || 0), 0) / recentContent.length)
         : 0;
+
+    const recentRunCosts = isAdmin
+      ? recentContent
+          .map((c) => (isRecord(c) ? numberOrNull((c as Record<string, unknown>).runCostUsd) : null))
+          .filter((n): n is number => typeof n === 'number')
+      : [];
+    const recentRunCostTotalUsd = recentRunCosts.reduce((sum, n) => sum + n, 0);
+    const recentRunCostAvgUsd = recentRunCosts.length ? recentRunCostTotalUsd / recentRunCosts.length : null;
 
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const activitiesSelect = isAdmin
@@ -134,6 +153,7 @@ export async function GET(request: NextRequest) {
       averageTrustScore: avg,
       recentActivities,
       recentContent,
+      ...(isAdmin ? { recentRunCostAvgUsd, recentRunCostTotalUsd } : {}),
     });
   } catch (error) {
     console.error('Dashboard stats error:', error);

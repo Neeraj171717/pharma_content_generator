@@ -29,6 +29,10 @@ export default function CreateContentPage() {
   const [primaryKeyword, setPrimaryKeyword] = useState('')
   const [secondaryKeyword, setSecondaryKeyword] = useState('')
   const [targetWordCount, setTargetWordCount] = useState(2000)
+  const validHumanizeLevels = ['off', 'standard', 'strong'] as const
+  type HumanizeLevel = (typeof validHumanizeLevels)[number]
+  const isHumanizeLevel = (v: string): v is HumanizeLevel => (validHumanizeLevels as readonly string[]).includes(v)
+  const [humanizeLevel, setHumanizeLevel] = useState<HumanizeLevel>('standard')
   const [internetFallbackUsed, setInternetFallbackUsed] = useState(false)
   const [contentSourceNotice, setContentSourceNotice] = useState('')
   const [heroImageUrl, setHeroImageUrl] = useState('')
@@ -149,6 +153,7 @@ export default function CreateContentPage() {
         userId: user.id,
         contentType,
         inputBody: body,
+        humanizeLevel,
       }
 
       const controller = new AbortController()
@@ -356,6 +361,18 @@ export default function CreateContentPage() {
                 <SelectItem value="news">News</SelectItem>
                 <SelectItem value="general">General</SelectItem>
                 <SelectItem value="private">Private</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Select value={humanizeLevel} onValueChange={(v) => setHumanizeLevel(isHumanizeLevel(v) ? v : 'standard')}>
+              <SelectTrigger>
+                <SelectValue placeholder="Rewrite style" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="off">Rewrite off</SelectItem>
+                <SelectItem value="standard">Rewrite standard</SelectItem>
+                <SelectItem value="strong">Rewrite strong</SelectItem>
               </SelectContent>
             </Select>
           </div>

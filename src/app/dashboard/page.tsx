@@ -31,6 +31,8 @@ interface DashboardStats {
   totalUsers: number;
   activeUsers: number;
   averageTrustScore: number;
+  recentRunCostAvgUsd?: number | null;
+  recentRunCostTotalUsd?: number | null;
   recentActivities: Array<{
     id: string;
     type: string;
@@ -46,6 +48,8 @@ interface DashboardStats {
     status: string;
     trustScore: number;
     createdAt: string;
+    runCostUsd?: number | null;
+    runTokens?: number | null;
   }>;
 }
 
@@ -116,6 +120,11 @@ export default function DashboardPage() {
     return 'text-red-600';
   };
 
+  const formatUsd = (value: number | null | undefined) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return `$${value.toFixed(2)}`;
+  };
+
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="mb-8">
@@ -165,6 +174,21 @@ export default function DashboardPage() {
               <div className="text-2xl font-bold">{stats?.totalUsers || 0}</div>
               <p className="text-xs text-muted-foreground">
                 {stats?.activeUsers || 0} active
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {permissions.canManageUsers && (
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Avg Run Cost</CardTitle>
+              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{formatUsd(stats?.recentRunCostAvgUsd)}</div>
+              <p className="text-xs text-muted-foreground">
+                Total: {formatUsd(stats?.recentRunCostTotalUsd)} (recent runs)
               </p>
             </CardContent>
           </Card>
@@ -293,6 +317,11 @@ export default function DashboardPage() {
                           {content.trustScore}% Trust Score
                         </span>
                       </div>
+                      {permissions.canManageUsers && (
+                        <div className="text-xs text-muted-foreground">
+                          Run cost: {formatUsd(content.runCostUsd)} · Tokens: {typeof content.runTokens === 'number' ? content.runTokens : '—'}
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center space-x-2">
                       <Button variant="ghost" size="sm">
