@@ -26,6 +26,10 @@ export default function CreateContentPage() {
   const router = useRouter()
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
+  const validClientTargets = ['aurigene', 'onesource', 'other'] as const
+  type ClientTarget = (typeof validClientTargets)[number]
+  const isClientTarget = (v: string): v is ClientTarget => (validClientTargets as readonly string[]).includes(v)
+  const [clientTarget, setClientTarget] = useState<ClientTarget>('other')
   const [primaryKeyword, setPrimaryKeyword] = useState('')
   const [secondaryKeyword, setSecondaryKeyword] = useState('')
   const [targetWordCount, setTargetWordCount] = useState(2000)
@@ -154,6 +158,7 @@ export default function CreateContentPage() {
         contentType,
         inputBody: body,
         humanizeLevel,
+        clientTarget,
       }
 
       const controller = new AbortController()
@@ -361,6 +366,18 @@ export default function CreateContentPage() {
                 <SelectItem value="news">News</SelectItem>
                 <SelectItem value="general">General</SelectItem>
                 <SelectItem value="private">Private</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Select value={clientTarget} onValueChange={(v) => setClientTarget(isClientTarget(v) ? v : 'other')}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select client" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="aurigene">APSL (aurigeneservices.com)</SelectItem>
+                <SelectItem value="onesource">OneSource (onesourcecdmo.com)</SelectItem>
+                <SelectItem value="other">Other</SelectItem>
               </SelectContent>
             </Select>
           </div>

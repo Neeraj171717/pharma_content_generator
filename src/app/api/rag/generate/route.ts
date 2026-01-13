@@ -388,6 +388,122 @@ function titleOfHtml(html: string) {
   return m ? m[1].trim() : ''
 }
 
+const validClientTargets = ['aurigene', 'onesource', 'other'] as const
+type ClientTarget = (typeof validClientTargets)[number]
+
+function normalizeClientTarget(v: unknown): ClientTarget {
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : ''
+  if ((validClientTargets as readonly string[]).includes(s)) return s as ClientTarget
+  return 'other'
+}
+
+function extractInternalLinksFromHtml(args: { html: string; baseUrl: string; max: number; pathHints?: string[] }) {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const hints = (args.pathHints || []).map((h) => h.toLowerCase()).filter(Boolean)
+
+  let base: URL | null = null
+  try {
+    base = new URL(args.baseUrl)
+  } catch {
+    return out
+  }
+
+  for (const m of String(args.html || '').matchAll(/<a[^>]+href\s*=\s*(?:"([^"]+)"|'([^']+)')/gi)) {
+    const hrefRaw = (m[1] || m[2] || '').trim()
+    if (!hrefRaw) continue
+    if (hrefRaw.startsWith('#')) continue
+    if (/^(mailto:|tel:|javascript:)/i.test(hrefRaw)) continue
+
+    let abs: string | null = null
+    try {
+      abs = new URL(hrefRaw, base).toString()
+    } catch {
+      abs = null
+    }
+    if (!abs) continue
+    if (looksLikeAssetUrl(abs)) continue
+
+    let u: URL | null = null
+    try {
+      u = new URL(abs)
+    } catch {
+      u = null
+    }
+    if (!u) continue
+    if (u.hostname.replace(/^www\./, '') !== base.hostname.replace(/^www\./, '')) continue
+
+    const pathLower = u.pathname.toLowerCase()
+    if (hints.length > 0 && !hints.some((h) => pathLower.includes(h))) continue
+
+    u.hash = ''
+    const normalized = u.toString()
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(normalized)
+    if (out.length >= Math.max(1, Math.floor(args.max))) break
+  }
+
+  return out
+}
+
+async function fetchClientStyleSamples(args: {
+  clientTarget: ClientTarget
+  overallTimeoutMs: number
+  perPageTimeoutMs: number
+}): Promise<{ clientName: string; urls: string[]; samplesText: string } | null> {
+  const ct = args.clientTarget
+  if (ct === 'other') return null
+
+  const clientName = ct === 'aurigene' ? 'APSL (Aurigene Services)' : 'OneSource CDMO'
+  const baseUrl = ct === 'aurigene' ? 'https://www.aurigeneservices.com/' : 'https://www.onesourcecdmo.com/'
+
+  const started = Date.now()
+  const remaining = () => Math.max(0, args.overallTimeoutMs - (Date.now() - started))
+
+  const homeRes = await fetchHtmlWithTimeout(baseUrl, Math.min(args.perPageTimeoutMs, remaining()))
+  if (!homeRes.ok) return null
+  const homeHtml = await homeRes.text().catch(() => '')
+  const sampleUrls = extractInternalLinksFromHtml({
+    html: homeHtml,
+    baseUrl,
+    max: 2,
+    pathHints: ['blog', 'insight', 'news', 'resource', 'article'],
+  })
+
+  const urls = sampleUrls.length > 0 ? sampleUrls : [baseUrl]
+  const limitedUrls = urls.slice(0, 2)
+  const pageTimeoutMs = Math.min(args.perPageTimeoutMs, Math.max(1500, Math.floor(remaining() / Math.max(1, limitedUrls.length))))
+
+  const pages = await Promise.all(
+    limitedUrls.map(async (u) => {
+      try {
+        const res = await fetchHtmlWithTimeout(u, pageTimeoutMs)
+        if (!res.ok) return null
+        const contentType = (res.headers.get('content-type') || '').toLowerCase()
+        if (contentType && !contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) return null
+        const html = await res.text().catch(() => '')
+        const title = titleOfHtml(html) || u
+        const text = stripHtml(html)
+        if (text.length < 400) return null
+        return { url: u, title, text: text.slice(0, 2500) }
+      } catch {
+        return null
+      }
+    })
+  )
+
+  const okPages = pages.filter(Boolean) as Array<{ url: string; title: string; text: string }>
+  if (okPages.length === 0) return null
+
+  const samplesText = okPages
+    .map((p, i) => `Sample ${i + 1}\nTitle: ${p.title}\nURL: ${p.url}\nText:\n${p.text}`)
+    .join('\n\n')
+    .slice(0, 6000)
+
+  return { clientName, urls: okPages.map((p) => p.url), samplesText }
+}
+
 function looksLikeAssetUrl(url: string) {
   const lower = url.toLowerCase()
   if (lower.includes('/favicon')) return true
@@ -678,6 +794,7 @@ export async function POST(req: Request) {
     const body = await req.json()
     const { topic, keyword: keywordRaw, primaryKeyword, secondaryKeyword, mode, userId, targetWordCount, contentType, inputBody, humanizeLevel } =
       body as Record<string, unknown>
+    const clientTarget = normalizeClientTarget((body as Record<string, unknown>)?.clientTarget)
     const topicText = typeof topic === 'string' ? topic.trim() : String(topic || '').trim()
     const userIdText = typeof userId === 'string' ? userId.trim() : String(userId || '').trim()
     const primary = String(keywordRaw || primaryKeyword || '').trim()
@@ -1059,6 +1176,24 @@ export async function POST(req: Request) {
         return url ? `[${idx + 1}] ${title} - ${url}` : `[${idx + 1}] ${title}`
       })
       .join('\n') || 'No sources were retrieved.'
+
+    let clientStyleBlock = ''
+    if (!isPrivateMode && clientTarget !== 'other' && remainingMs() > 12000) {
+      const style = await fetchClientStyleSamples({
+        clientTarget,
+        overallTimeoutMs: 9000,
+        perPageTimeoutMs: 5000,
+      }).catch(() => null)
+      if (style?.samplesText) {
+        clientStyleBlock =
+          `\n\nClient style target: ${style.clientName}.\n` +
+          `Mimic the writing style inferred from the samples below: tone, pacing, headings, and level of technical detail.\n` +
+          `Hard rules:\n- Do not copy phrases verbatim.\n- Do not mention that you analyzed samples.\n- Keep all compliance/sourcing rules unchanged.\n\nClient style samples:\n${style.samplesText}`
+      } else {
+        warnings.push('Client style samples could not be fetched; used default style.')
+      }
+    }
+
     const contentTypeInstruction =
       contentTypeText === 'pr'
         ? `Content type requirements:\n- Write as a press release.\n- Include: Headline, Subheadline, Dateline, Summary, Body, Boilerplate, Media Contact.\n- Maintain a compliant, non-promotional tone.\n- Use citations like [1] for factual statements.`
@@ -1097,6 +1232,7 @@ export async function POST(req: Request) {
     const systemPromptFinal =
       (isNewsMode ? systemPrompt : isPrivateMode ? systemPrompt : systemPromptGeneral) +
       internetNoticeInstruction +
+      clientStyleBlock +
       `\n\n${contentTypeInstruction}`
     const targetLengthText = targetWordsCapped ? `Target length: ~${targetWordsCapped} words (do not exceed ${targetWordsCapped}).` : ''
     const existingContentText = inputBodyText ? `\n\nExisting Content:\n${inputBodyText}\n` : ''
@@ -1243,6 +1379,7 @@ export async function POST(req: Request) {
     const heroImageDownloadUrl = `/api/ai/hero/download?prompt=${encodeURIComponent(heroPrompt)}&width=1024&height=576&seed=${heroSeed}`
 
     const baseOutput = {
+      client_target: clientTarget,
       hero_image_url: heroImageUrl,
       hero_image_download_url: heroImageDownloadUrl,
       direct_answer: '',
