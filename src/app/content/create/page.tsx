@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import { supabaseClient } from '@/lib/supabaseClient'
@@ -25,11 +25,15 @@ export default function CreateContentPage() {
   const { user, isLoading } = useAuth()
   const router = useRouter()
   const [title, setTitle] = useState('')
+  const [titleTouched, setTitleTouched] = useState(false)
+  const [suggestingTitle, setSuggestingTitle] = useState(false)
+  const [suggestedTitle, setSuggestedTitle] = useState('')
   const [body, setBody] = useState('')
   const validClientTargets = ['aurigene', 'onesource', 'other'] as const
   type ClientTarget = (typeof validClientTargets)[number]
   const isClientTarget = (v: string): v is ClientTarget => (validClientTargets as readonly string[]).includes(v)
   const [clientTarget, setClientTarget] = useState<ClientTarget>('other')
+  const [useRankedBlogs, setUseRankedBlogs] = useState(false)
   const [primaryKeyword, setPrimaryKeyword] = useState('')
   const [secondaryKeyword, setSecondaryKeyword] = useState('')
   const [targetWordCount, setTargetWordCount] = useState(2000)
@@ -78,6 +82,46 @@ export default function CreateContentPage() {
   const [mode, setMode] = useState<Mode>('general')
   const [saving, setSaving] = useState(false)
   const [generating, setGenerating] = useState(false)
+
+  useEffect(() => {
+    const primary = primaryKeyword.trim()
+    const secondary = secondaryKeyword.trim()
+    if (!primary) {
+      setSuggestingTitle(false)
+      setSuggestedTitle('')
+      return
+    }
+
+    const id = setTimeout(() => {
+      void (async () => {
+        try {
+          setSuggestingTitle(true)
+          const r = await fetch('/api/ai/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              kind: 'title_suggestion',
+              primaryKeyword: primary,
+              secondaryKeyword: secondary,
+              clientTarget,
+            }),
+          })
+          if (!r.ok) return
+          const data = await r.json().catch(() => ({}))
+          const titleOut = typeof data?.title === 'string' ? data.title.trim() : ''
+          const titlesOut = Array.isArray(data?.titles) ? (data.titles as unknown[]).map((t) => String(t || '').trim()).filter(Boolean) : []
+          if (!titleOut && titlesOut.length === 0) return
+          const best = titleOut || titlesOut[0] || ''
+          setSuggestedTitle(best)
+          if (!titleTouched && !title.trim() && best) setTitle(best)
+        } finally {
+          setSuggestingTitle(false)
+        }
+      })()
+    }, 650)
+
+    return () => clearTimeout(id)
+  }, [primaryKeyword, secondaryKeyword, clientTarget, title, titleTouched])
 
   if (isLoading) {
     return (
@@ -159,6 +203,7 @@ export default function CreateContentPage() {
         inputBody: body,
         humanizeLevel,
         clientTarget,
+        useRankedBlogs,
       }
 
       const controller = new AbortController()
@@ -293,7 +338,31 @@ export default function CreateContentPage() {
             </div>
           </div>
           <div>
-            <Input placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <Input
+              placeholder="Title"
+              value={title}
+              onChange={(e) => {
+                setTitleTouched(true)
+                setTitle(e.target.value)
+              }}
+            />
+            {primaryKeyword.trim() ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <div>{suggestingTitle ? 'Suggesting SEO title…' : suggestedTitle ? `Suggested: ${suggestedTitle}` : 'No suggestion yet'}</div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    if (!suggestedTitle) return
+                    setTitleTouched(false)
+                    setTitle(suggestedTitle)
+                  }}
+                  disabled={!suggestedTitle}
+                >
+                  Use suggestion
+                </Button>
+              </div>
+            ) : null}
           </div>
           <div>
             <Input
@@ -381,6 +450,15 @@ export default function CreateContentPage() {
               </SelectContent>
             </Select>
           </div>
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={useRankedBlogs}
+              onChange={(e) => setUseRankedBlogs(e.target.checked)}
+              disabled={mode === 'private'}
+            />
+            Use top-ranking blogs (internet) for context
+          </label>
           <div>
             <Select value={humanizeLevel} onValueChange={(v) => setHumanizeLevel(isHumanizeLevel(v) ? v : 'standard')}>
               <SelectTrigger>

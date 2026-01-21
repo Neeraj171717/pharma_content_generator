@@ -795,6 +795,10 @@ export async function POST(req: Request) {
     const { topic, keyword: keywordRaw, primaryKeyword, secondaryKeyword, mode, userId, targetWordCount, contentType, inputBody, humanizeLevel } =
       body as Record<string, unknown>
     const clientTarget = normalizeClientTarget((body as Record<string, unknown>)?.clientTarget)
+    const useRankedBlogs =
+      typeof (body as Record<string, unknown>)?.useRankedBlogs === 'boolean'
+        ? Boolean((body as Record<string, unknown>).useRankedBlogs)
+        : false
     const topicText = typeof topic === 'string' ? topic.trim() : String(topic || '').trim()
     const userIdText = typeof userId === 'string' ? userId.trim() : String(userId || '').trim()
     const primary = String(keywordRaw || primaryKeyword || '').trim()
@@ -891,9 +895,38 @@ export async function POST(req: Request) {
     let ragChunksForValidation: Array<{ content: string; metadata: Record<string, unknown> }> = []
     const queryDocsTimeoutMs = isNewsMode ? 18000 : 12000
     const queryDocsMaxAttempts = 2
+    let rankedBlogsUsed = false
     
     try {
-      if (isPrivateMode) {
+      if (!isPrivateMode && useRankedBlogs && remainingMs() > 30000) {
+        try {
+          const rankedDocs = await collectInternetDocs({
+            query: `${topicText} ${keyword}`,
+            maxDocs: 3,
+            searchTimeoutMs: 12000,
+            pageTimeoutMs: 12000,
+          })
+          if (rankedDocs.length > 0) {
+            rankedBlogsUsed = true
+            internetFallbackUsed = true
+            warnings.push('Used top-ranking internet sources as primary context.')
+            citations = rankedDocs.map((d) => ({
+              title: d.title || 'Source',
+              url: d.url,
+              source: d.source || toHostSource(d.url),
+            }))
+            context = rankedDocs.map((d) => `${d.title}\n${d.content}`).join('\n\n')
+            ragChunksForValidation = rankedDocs.map((d) => ({
+              content: String(d.content || ''),
+              metadata: { title: d.title, url: d.url, source: d.source || toHostSource(d.url) },
+            }))
+          }
+        } catch (err) {
+          warnings.push(`Top-ranking blog scan failed: ${errorMessage(err)}`)
+        }
+      }
+
+      if (!rankedBlogsUsed && isPrivateMode) {
         const priv = await invokeEdgeFunctionWithRetry<unknown[]>({
           fn: 'query-docs',
           body: { query: `${topicText} ${keyword}`, mode: 'private', user_id: userIdText, top_k: 5 },
@@ -956,7 +989,7 @@ export async function POST(req: Request) {
         if (context && citations.length === 0) {
           citations = [{ title: 'SOP', url: '', source: 'SOP' }]
         }
-      } else {
+      } else if (!rankedBlogsUsed) {
         const pub = await invokeEdgeFunctionWithRetry<unknown[]>({
           fn: 'query-docs',
           body: {
@@ -1066,7 +1099,7 @@ export async function POST(req: Request) {
       console.error('[RAG] Retrieval Failed:', err);
     }
 
-    if (!isPrivateMode && citations.length < 3) {
+    if (!rankedBlogsUsed && !isPrivateMode && citations.length < 3) {
       try {
         const fr = await fetch(`${env.appBaseUrl}/api/rag/collect`, {
           method: 'POST',
