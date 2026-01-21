@@ -19,7 +19,11 @@ function normalizeClientTarget(v: unknown) {
 
 export async function POST(req: Request) {
   try {
-    requireKeys(['openRouterApiKey'])
+    try {
+      requireKeys(['openRouterApiKey'])
+    } catch {
+      return NextResponse.json({ error: 'missing_openrouter_key' }, { status: 500 })
+    }
     const bodyUnknown: unknown = await req.json().catch(() => null)
     const body = isRecord(bodyUnknown) ? bodyUnknown : {}
     const prompt = typeof body.prompt === 'string' ? body.prompt : ''
@@ -48,7 +52,7 @@ export async function POST(req: Request) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: env.textModel,
+          model: env.textModel || env.textModelFallback || 'openrouter/auto',
           temperature: 0.3,
           messages: [
             { role: 'system', content: system },
@@ -87,7 +91,7 @@ export async function POST(req: Request) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: env.textModel,
+        model: env.textModel || env.textModelFallback || 'openrouter/auto',
         messages: [{ role: 'user', content: prompt }],
       }),
     })
@@ -95,7 +99,8 @@ export async function POST(req: Request) {
     const data = await r.json()
     const content = data.choices?.[0]?.message?.content || ''
     return NextResponse.json({ content })
-  } catch {
-    return NextResponse.json({ error: 'server_error' }, { status: 500 })
+  } catch (e: unknown) {
+    const details = e instanceof Error ? e.message : 'unknown_error'
+    return NextResponse.json({ error: 'server_error', details }, { status: 500 })
   }
 }

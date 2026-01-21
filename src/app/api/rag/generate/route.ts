@@ -896,6 +896,7 @@ export async function POST(req: Request) {
     const queryDocsTimeoutMs = isNewsMode ? 18000 : 12000
     const queryDocsMaxAttempts = 2
     let rankedBlogsUsed = false
+    let rankedBlogUrls: string[] = []
     
     try {
       if (!isPrivateMode && useRankedBlogs && remainingMs() > 30000) {
@@ -915,6 +916,7 @@ export async function POST(req: Request) {
               url: d.url,
               source: d.source || toHostSource(d.url),
             }))
+            rankedBlogUrls = rankedDocs.map((d) => d.url).filter(Boolean)
             context = rankedDocs.map((d) => `${d.title}\n${d.content}`).join('\n\n')
             ragChunksForValidation = rankedDocs.map((d) => ({
               content: String(d.content || ''),
@@ -1413,6 +1415,9 @@ export async function POST(req: Request) {
 
     const baseOutput = {
       client_target: clientTarget,
+      ranked_blogs_used: rankedBlogsUsed,
+      ranked_blog_provider: rankedBlogsUsed ? 'duckduckgo' : null,
+      ranked_blog_urls: rankedBlogsUsed ? rankedBlogUrls : [],
       hero_image_url: heroImageUrl,
       hero_image_download_url: heroImageDownloadUrl,
       direct_answer: '',

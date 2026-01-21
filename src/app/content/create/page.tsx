@@ -21,6 +21,17 @@ function stableSeedFromString(input: string) {
   return (h >>> 0) % 1000000000
 }
 
+function buildFallbackTitle(primary: string, secondary: string, clientTarget: string) {
+  const p = String(primary || '').trim()
+  const s = String(secondary || '').trim()
+  const ct = String(clientTarget || '').trim().toLowerCase()
+  const client = ct === 'aurigene' ? 'Aurigene' : ct === 'onesource' ? 'OneSource' : ''
+  if (!p) return ''
+  const base = s ? `${p}: ${s}` : p
+  const suffix = client ? ` | ${client}` : ''
+  return `${base} Guide${suffix}`
+}
+
 export default function CreateContentPage() {
   const { user, isLoading } = useAuth()
   const router = useRouter()
@@ -28,12 +39,20 @@ export default function CreateContentPage() {
   const [titleTouched, setTitleTouched] = useState(false)
   const [suggestingTitle, setSuggestingTitle] = useState(false)
   const [suggestedTitle, setSuggestedTitle] = useState('')
+  const [titleSuggestionError, setTitleSuggestionError] = useState('')
   const [body, setBody] = useState('')
   const validClientTargets = ['aurigene', 'onesource', 'other'] as const
   type ClientTarget = (typeof validClientTargets)[number]
   const isClientTarget = (v: string): v is ClientTarget => (validClientTargets as readonly string[]).includes(v)
   const [clientTarget, setClientTarget] = useState<ClientTarget>('other')
   const [useRankedBlogs, setUseRankedBlogs] = useState(false)
+  const [lastGenerationMeta, setLastGenerationMeta] = useState<{
+    trustScore: number | null
+    humanized: boolean
+    rankedBlogsUsed: boolean
+    rankedBlogProvider: string | null
+    rankedBlogUrls: string[]
+  } | null>(null)
   const [primaryKeyword, setPrimaryKeyword] = useState('')
   const [secondaryKeyword, setSecondaryKeyword] = useState('')
   const [targetWordCount, setTargetWordCount] = useState(2000)
@@ -89,6 +108,7 @@ export default function CreateContentPage() {
     if (!primary) {
       setSuggestingTitle(false)
       setSuggestedTitle('')
+      setTitleSuggestionError('')
       return
     }
 
@@ -96,6 +116,7 @@ export default function CreateContentPage() {
       void (async () => {
         try {
           setSuggestingTitle(true)
+          setTitleSuggestionError('')
           const r = await fetch('/api/ai/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -106,7 +127,17 @@ export default function CreateContentPage() {
               clientTarget,
             }),
           })
-          if (!r.ok) return
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}))
+            const msg = typeof err?.error === 'string' ? err.error : `title_suggestion_failed_${r.status}`
+            setTitleSuggestionError(msg)
+            const fallback = buildFallbackTitle(primary, secondary, clientTarget)
+            if (fallback) {
+              setSuggestedTitle(fallback)
+              if (!titleTouched && !title.trim()) setTitle(fallback)
+            }
+            return
+          }
           const data = await r.json().catch(() => ({}))
           const titleOut = typeof data?.title === 'string' ? data.title.trim() : ''
           const titlesOut = Array.isArray(data?.titles) ? (data.titles as unknown[]).map((t) => String(t || '').trim()).filter(Boolean) : []
@@ -190,6 +221,7 @@ export default function CreateContentPage() {
       setHeroImageUrl('')
       setHeroImageDownloadUrl('')
       setDraftId('')
+      setLastGenerationMeta(null)
 
       const payload = {
         topic: title,
@@ -240,6 +272,18 @@ export default function CreateContentPage() {
       setHeroImageUrl(typeof data?.hero_image_url === 'string' ? data.hero_image_url : '')
       setHeroImageDownloadUrl(typeof data?.hero_image_download_url === 'string' ? data.hero_image_download_url : '')
       const humanized = Boolean(data?.humanized)
+      const rankedBlogsUsed = Boolean(data?.ranked_blogs_used)
+      const rankedBlogProvider = typeof data?.ranked_blog_provider === 'string' ? data.ranked_blog_provider : null
+      const rankedBlogUrls = Array.isArray(data?.ranked_blog_urls)
+        ? (data.ranked_blog_urls as unknown[]).map((u) => String(u || '').trim()).filter(Boolean)
+        : []
+      setLastGenerationMeta({
+        trustScore: Number.isFinite(trustScore) ? trustScore : null,
+        humanized,
+        rankedBlogsUsed,
+        rankedBlogProvider,
+        rankedBlogUrls,
+      })
 
       if (blocked) {
         const reviewBody = data?.review_body ? String(data.review_body) : data?.body ? String(data.body) : ''
@@ -253,6 +297,11 @@ export default function CreateContentPage() {
       if (data?.body) {
         setBody(String(data.body))
         toast.success('Content generated successfully')
+        if (rankedBlogsUsed) {
+          toast.message('Top-ranking sources used', {
+            description: rankedBlogUrls[0] ? rankedBlogUrls[0] : rankedBlogProvider ? rankedBlogProvider : 'Internet sources',
+          })
+        }
         if (fallbackUsed) {
           toast.message('Internet sources were used', {
             description: 'No universe sources were found; the output includes a Content Source Notice.',
@@ -348,7 +397,15 @@ export default function CreateContentPage() {
             />
             {primaryKeyword.trim() ? (
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                <div>{suggestingTitle ? 'Suggesting SEO title…' : suggestedTitle ? `Suggested: ${suggestedTitle}` : 'No suggestion yet'}</div>
+                <div>
+                  {suggestingTitle
+                    ? 'Suggesting SEO title…'
+                    : suggestedTitle
+                      ? `Suggested: ${suggestedTitle}`
+                      : titleSuggestionError
+                        ? `No suggestion (${titleSuggestionError})`
+                        : 'No suggestion yet'}
+                </div>
                 <Button
                   type="button"
                   variant="outline"
@@ -478,6 +535,15 @@ export default function CreateContentPage() {
             <Button onClick={submit} disabled={saving || !title || !body}>{saving ? 'Saving...' : 'Save'}</Button>
             <Button variant="outline" onClick={() => router.push('/content')}>Cancel</Button>
           </div>
+          {lastGenerationMeta ? (
+            <div className="text-sm text-muted-foreground">
+              {lastGenerationMeta.trustScore !== null ? `Trust score: ${lastGenerationMeta.trustScore}%` : 'Trust score: N/A'} ·{' '}
+              {lastGenerationMeta.humanized ? 'Humanized: yes' : 'Humanized: no'} ·{' '}
+              {lastGenerationMeta.rankedBlogsUsed
+                ? `Ranked blogs: yes${lastGenerationMeta.rankedBlogProvider ? ` (${lastGenerationMeta.rankedBlogProvider})` : ''}`
+                : 'Ranked blogs: no'}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
     </div>
