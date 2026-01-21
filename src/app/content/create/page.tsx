@@ -55,6 +55,7 @@ export default function CreateContentPage() {
   } | null>(null)
   const [primaryKeyword, setPrimaryKeyword] = useState('')
   const [secondaryKeyword, setSecondaryKeyword] = useState('')
+  const [blogContext, setBlogContext] = useState('')
   const [targetWordCount, setTargetWordCount] = useState(2000)
   const validHumanizeLevels = ['off', 'standard', 'strong'] as const
   type HumanizeLevel = (typeof validHumanizeLevels)[number]
@@ -124,6 +125,7 @@ export default function CreateContentPage() {
               kind: 'title_suggestion',
               primaryKeyword: primary,
               secondaryKeyword: secondary,
+              blogContext,
               clientTarget,
             }),
           })
@@ -433,6 +435,14 @@ export default function CreateContentPage() {
               placeholder="Secondary keyword"
               value={secondaryKeyword}
               onChange={(e) => setSecondaryKeyword(e.target.value)}
+            />
+          </div>
+          <div>
+            <Textarea
+              placeholder="Blog Context / Idea (Optional: Describe the blog's purpose to get better title suggestions)"
+              value={blogContext}
+              onChange={(e) => setBlogContext(e.target.value)}
+              className="h-20"
             />
           </div>
           <div>

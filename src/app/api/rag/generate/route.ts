@@ -558,13 +558,46 @@ async function fetchHtmlWithTimeout(url: string, ms: number) {
 async function collectInternetDocs(args: { query: string; maxDocs: number; searchTimeoutMs: number; pageTimeoutMs: number }) {
   const q = String(args.query || '').trim()
   if (!q) return [] as Array<{ title: string; url: string; content: string; source: string }>
-  const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(q)}`
-  const sr = await fetchHtmlWithTimeout(searchUrl, args.searchTimeoutMs)
-  const sh = await sr.text().catch(() => '')
-  const resultUrls = extractDuckDuckGoResultUrls(sh)
+
+  let candidateUrls: string[] = []
+
+  // 1. Google Search (Priority)
+  if (env.googleSearchApiKey && env.googleSearchCx) {
+    try {
+      const controller = new AbortController()
+      const id = setTimeout(() => controller.abort(), args.searchTimeoutMs)
+      const gUrl = `https://www.googleapis.com/customsearch/v1?key=${env.googleSearchApiKey}&cx=${env.googleSearchCx}&q=${encodeURIComponent(q)}&num=10`
+      const res = await fetch(gUrl, { signal: controller.signal })
+      clearTimeout(id)
+      if (res.ok) {
+        const json = await res.json()
+        if (json.items && Array.isArray(json.items)) {
+          const gUrls = json.items.map((i: any) => i.link).filter((u: any) => typeof u === 'string')
+          candidateUrls.push(...gUrls)
+        }
+      }
+    } catch (e) {
+      console.warn('[Collect] Google Search failed:', e)
+    }
+  }
+
+  // 2. DuckDuckGo (Fallback/Supplement)
+  try {
+    const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(q)}`
+    const sr = await fetchHtmlWithTimeout(searchUrl, args.searchTimeoutMs)
+    const sh = await sr.text().catch(() => '')
+    const ddgUrls = extractDuckDuckGoResultUrls(sh)
+    candidateUrls.push(...ddgUrls)
+  } catch (e) {
+    console.warn('[Collect] DuckDuckGo Search failed:', e)
+  }
+
+  const resultUrls = candidateUrls
     .map((u) => normalizeUrlString(u))
     .filter(Boolean)
     .filter((u) => !looksLikeAssetUrl(u))
+    // Deduplicate
+    .filter((u, i, arr) => arr.indexOf(u) === i)
     .slice(0, Math.max(args.maxDocs * 4, args.maxDocs))
 
   const docs: Array<{ title: string; url: string; content: string; source: string }> = []
@@ -1241,8 +1274,8 @@ export async function POST(req: Request) {
               : contentTypeText === 'web2_article'
                 ? `Content type requirements:\n- Write as a Web 2.0 style blog post: simple headings, conversational but professional tone.\n- Use citations like [1] for factual statements.`
                 : contentTypeText === 'short_article'
-                  ? `Content type requirements:\n- Write a short article with concise sections.\n- Use citations like [1] for factual statements.`
-                  : `Content type requirements:\n- Write a long-form article with deeper explanations.\n- Use citations like [1] for factual statements.`
+                ? `Content type requirements:\n- Write a short article with concise sections.\n- Use citations like [1] for factual statements.`
+                : `Content type requirements:\n- Write a comprehensive long-form article (aim for ~2000 words).\n- MANDATORY: Include at least 6-8 detailed sections to reach the word count.\n- Ensure deep coverage; each section should be substantial (approx. 300 words).\n- Structure for AEO (Answer Engine Optimization) and GEO (Generative Engine Optimization): Use clear headings, direct answers, and list-based summaries.\n- Use citations like [1] for factual statements.`
     const hasSources = citations.length > 0
     const systemPrompt = isNewsMode
       ? hasSources
@@ -1254,8 +1287,9 @@ export async function POST(req: Request) {
           ? `You are an expert pharma content writer. Write compliant, factual content and avoid prohibited claims. You MUST end with a "## Sources / References" section listing the provided Sources as numbered references. Do not invent sources.`
           : `You are an expert pharma content writer. Write compliant, cautious content and avoid prohibited claims.\n\nHard rules:\n- Sources could not be retrieved; do NOT include inline citations like [1].\n- Do not invent URLs, studies, approvals, statistics, or clinical outcomes.\n- Avoid numeric claims and specific factual assertions that require citations.\n- Output must be Markdown.`
     const systemPromptGeneral = hasSources
-      ? `You are an expert pharma content writer.\n\nHard rules:\n- Use ONLY the provided Context.\n- Avoid prohibited pharma marketing language (guarantees, cure claims, exaggerated efficacy/safety, off-label promotion).\n- If a detail is missing, write \"Not stated in sources.\"\n- Every factual claim must include an inline citation like [1].\n- Output must be Markdown.\n\nSEO/AEO/GEO structure (use this exact order):\n# <SEO Title>\n## TL;DR\n- <3-6 bullets with citations>\n## Direct Answer\n2-4 sentences with citations.\n## Overview\n## Key Points\n- <bullets with citations>\n## Detailed Explanation\nUse H2/H3 headings that naturally include the primary keyword.\n## FAQs\n### Q1: <question>\nA1: <answer with citations>\n### Q2: <question>\nA2: <answer with citations>\n### Q3: <question>\nA3: <answer with citations>\n\nDo not add a Sources section; citations will be provided separately.`
-      : `You are an expert pharma content writer.\n\nHard rules:\n- Sources could not be retrieved; do NOT include inline citations like [1].\n- Avoid prohibited pharma marketing language (guarantees, cure claims, exaggerated efficacy/safety, off-label promotion).\n- Do not invent studies, approvals, statistics, or specific clinical outcomes.\n- Avoid numeric claims and verification-dependent facts.\n- Output must be Markdown.\n\nSEO/AEO/GEO structure (use this exact order):\n# <SEO Title>\n## TL;DR\n- <3-6 bullets>\n## Direct Answer\n2-4 sentences.\n## Overview\n## Key Points\n- <bullets>\n## Detailed Explanation\nUse H2/H3 headings that naturally include the primary keyword.\n## FAQs\n### Q1: <question>\nA1: <answer>\n### Q2: <question>\nA2: <answer>\n### Q3: <question>\nA3: <answer>\n\nDo not add a Sources section; it will be provided separately.`
+      ? `You are an expert pharma content writer.\n\nHard rules:\n- Use ONLY the provided Context.\n- Avoid prohibited pharma marketing language (guarantees, cure claims, exaggerated efficacy/safety, off-label promotion).\n- If a detail is missing, write \"Not stated in sources.\"\n- Every factual claim must include an inline citation like [1].\n- Output must be Markdown.\n\nSEO/AEO/GEO structure (use this exact order):\n# <SEO Title>\n## TL;DR\n- <3-6 bullets with citations>\n## Direct Answer
+2-4 sentences with citations (optimized for snippets).\n## Overview\n## Key Points\n- <bullets with citations>\n## Detailed Explanation\nUse H2/H3 headings that naturally include the primary keyword. Ensure comprehensive depth and authority for GEO.\n## FAQs\n### Q1: <question>\nA1: <answer with citations>\n### Q2: <question>\nA2: <answer with citations>\n### Q3: <question>\nA3: <answer with citations>\n\nDo not add a Sources section; citations will be provided separately.`
+      : `You are an expert pharma content writer.\n\nHard rules:\n- Sources could not be retrieved; do NOT include inline citations like [1].\n- Avoid prohibited pharma marketing language (guarantees, cure claims, exaggerated efficacy/safety, off-label promotion).\n- Do not invent studies, approvals, statistics, or specific clinical outcomes.\n- Avoid numeric claims and verification-dependent facts.\n- Output must be Markdown.\n\nSEO/AEO/GEO structure (use this exact order):\n# <SEO Title>\n## TL;DR\n- <3-6 bullets>\n## Direct Answer\n2-4 sentences.\n## Overview\n## Key Points\n- <bullets>\n## Detailed Explanation\nUse H2/H3 headings that naturally include the primary keyword. Ensure comprehensive depth and authority for GEO.\n## FAQs\n### Q1: <question>\nA1: <answer>\n### Q2: <question>\nA2: <answer>\n### Q3: <question>\nA3: <answer>\n\nDo not add a Sources section; it will be provided separately.`
     const contentSourceNotice = internetFallbackUsed
       ? citations.length > 0
         ? 'This content was generated from internet sources, not from the approved universe of public domains.'
@@ -1284,7 +1318,7 @@ export async function POST(req: Request) {
     const candidates = [env.textModel, env.textModelFallback || undefined, 'openrouter/auto']
       .filter(Boolean) as string[]
     const longForm = typeof targetWordsCapped === 'number' && targetWordsCapped >= 1500
-    const defaultAttemptMs = longForm ? 40000 : isNewsMode ? 30000 : 35000
+    const defaultAttemptMs = longForm ? 90000 : isNewsMode ? 30000 : 35000
     const perAttemptMs = Number(process.env.GENERATION_ATTEMPT_TIMEOUT_MS || defaultAttemptMs)
     const defaultMaxAttempts = Math.min(2, candidates.length)
     const maxAttempts = Math.min(Number(process.env.GENERATION_MAX_ATTEMPTS || defaultMaxAttempts), candidates.length)

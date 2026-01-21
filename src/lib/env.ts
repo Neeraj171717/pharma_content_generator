@@ -49,6 +49,8 @@ export const env = {
   rankRegulatory: Number(process.env.RAG_RANK_REGULATORY_WEIGHT || 0.1),
   recencyDays: Number(process.env.RECENCY_DAYS || 30),
   trustThreshold: Number(process.env.TRUST_SCORE_THRESHOLD || 80),
+  googleSearchApiKey: process.env.GOOGLE_SEARCH_API_KEY || '',
+  googleSearchCx: process.env.GOOGLE_SEARCH_CX || '',
   allowedDomains: (process.env.ALLOWED_PUBLIC_DOMAINS || 'fda.gov,nih.gov,cdc.gov')
     .split(',')
     .map((d) => normalizeAllowedDomain(d))
