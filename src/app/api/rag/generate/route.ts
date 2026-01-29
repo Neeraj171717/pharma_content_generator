@@ -1274,7 +1274,7 @@ export async function POST(req: Request) {
               : contentTypeText === 'web2_article'
                 ? `Content type requirements:\n- Write as a Web 2.0 style blog post: simple headings, conversational but professional tone.\n- Use citations like [1] for factual statements.`
                 : contentTypeText === 'short_article'
-                ? `Content type requirements:\n- Write a short article with concise sections.\n- Use citations like [1] for factual statements.`
+                ? `Content type requirements:\n- Write a short article (aim for ~${targetWordsCapped || 750} words).\n- Structure: Introduction, 3-4 concise body sections, and Conclusion.\n- Ensure the content is substantial enough to meet the word count.\n- Use citations like [1] for factual statements.`
                 : `Content type requirements:\n- Write a comprehensive long-form article (aim for ~2000 words).\n- MANDATORY: Include at least 6-8 detailed sections to reach the word count.\n- Ensure deep coverage; each section should be substantial (approx. 300 words).\n- Structure for AEO (Answer Engine Optimization) and GEO (Generative Engine Optimization): Use clear headings, direct answers, and list-based summaries.\n- Use citations like [1] for factual statements.`
     const hasSources = citations.length > 0
     const systemPrompt = isNewsMode
