@@ -34,7 +34,7 @@ export async function POST(req: Request) {
       const secondaryKeyword = typeof body.secondaryKeyword === 'string' ? body.secondaryKeyword.trim() : ''
       const blogContext = typeof body.blogContext === 'string' ? body.blogContext.trim() : ''
       const clientTarget = normalizeClientTarget(body.clientTarget)
-      if (!primaryKeyword) return NextResponse.json({ error: 'primaryKeyword required' }, { status: 400 })
+      if (!primaryKeyword && !blogContext) return NextResponse.json({ error: 'primaryKeyword or blogContext required' }, { status: 400 })
 
       const audienceHint =
         clientTarget === 'aurigene'
@@ -43,9 +43,9 @@ export async function POST(req: Request) {
             ? 'Audience: CDMO prospects (OneSource-style).'
             : 'Audience: pharma/biotech professionals.'
       const contextLine = blogContext ? `Blog Context/Idea: ${blogContext}` : ''
-      const user = `Primary keyword: ${primaryKeyword}\nSecondary keyword: ${secondaryKeyword || 'None'}\n${contextLine}\n${audienceHint}`
+      const user = `Primary keyword: ${primaryKeyword || 'None'}\nSecondary keyword: ${secondaryKeyword || 'None'}\n${contextLine}\n${audienceHint}`
       const system =
-        'You write SEO/AEO/GEO friendly blog titles for pharma/biotech.\n\nReturn ONLY valid JSON (no markdown, no code fences) with this exact shape:\n{ "titles": string[] }\n\nRules:\n- Provide 5 distinct titles\n- Keep each title <= 70 characters\n- Include primary keyword in every title\n- Include secondary keyword when it fits naturally (not forced)\n- If Blog Context is provided, ensure titles reflect that specific idea.\n- Make titles clear, specific, and non-promotional'
+        'You write SEO/AEO/GEO friendly blog titles for pharma/biotech.\n\nReturn ONLY valid JSON (no markdown, no code fences) with this exact shape:\n{ "titles": string[] }\n\nRules:\n- Provide 5 distinct titles\n- Keep each title <= 70 characters\n- Include primary keyword in every title (if provided)\n- Include secondary keyword when it fits naturally (not forced)\n- If Blog Context is provided, ensure titles reflect that specific idea.\n- Make titles clear, specific, and non-promotional'
 
       const r = await fetch(`${env.openRouterBaseUrl}/chat/completions`, {
         method: 'POST',

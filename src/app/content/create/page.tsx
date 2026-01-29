@@ -21,13 +21,18 @@ function stableSeedFromString(input: string) {
   return (h >>> 0) % 1000000000
 }
 
-function buildFallbackTitle(primary: string, secondary: string, clientTarget: string) {
+function buildFallbackTitle(primary: string, secondary: string, clientTarget: string, context: string) {
   const p = String(primary || '').trim()
   const s = String(secondary || '').trim()
+  const c = String(context || '').trim()
   const ct = String(clientTarget || '').trim().toLowerCase()
   const client = ct === 'aurigene' ? 'Aurigene' : ct === 'onesource' ? 'OneSource' : ''
-  if (!p) return ''
-  const base = s ? `${p}: ${s}` : p
+  
+  if (!p && !c) return ''
+  
+  // If no primary keyword, try to use context (first 5 words)
+  const baseText = p ? p : c.split(' ').slice(0, 5).join(' ')
+  const base = s ? `${baseText}: ${s}` : baseText
   const suffix = client ? ` | ${client}` : ''
   return `${base} Guide${suffix}`
 }
@@ -106,7 +111,9 @@ export default function CreateContentPage() {
   useEffect(() => {
     const primary = primaryKeyword.trim()
     const secondary = secondaryKeyword.trim()
-    if (!primary) {
+    const context = blogContext.trim()
+    
+    if (!primary && !context) {
       setSuggestingTitle(false)
       setSuggestedTitle('')
       setTitleSuggestionError('')
@@ -125,7 +132,7 @@ export default function CreateContentPage() {
               kind: 'title_suggestion',
               primaryKeyword: primary,
               secondaryKeyword: secondary,
-              blogContext,
+              blogContext: context,
               clientTarget,
             }),
           })
@@ -133,7 +140,7 @@ export default function CreateContentPage() {
             const err = await r.json().catch(() => ({}))
             const msg = typeof err?.error === 'string' ? err.error : `title_suggestion_failed_${r.status}`
             setTitleSuggestionError(msg)
-            const fallback = buildFallbackTitle(primary, secondary, clientTarget)
+            const fallback = buildFallbackTitle(primary, secondary, clientTarget, context)
             if (fallback) {
               setSuggestedTitle(fallback)
               if (!titleTouched && !title.trim()) setTitle(fallback)
@@ -154,7 +161,7 @@ export default function CreateContentPage() {
     }, 650)
 
     return () => clearTimeout(id)
-  }, [primaryKeyword, secondaryKeyword, clientTarget, title, titleTouched])
+  }, [primaryKeyword, secondaryKeyword, blogContext, clientTarget, title, titleTouched])
 
   if (isLoading) {
     return (
